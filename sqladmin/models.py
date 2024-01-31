@@ -45,6 +45,12 @@ from sqladmin.helpers import (
     slugify_class_name,
     stream_to_csv,
 )
+from sqladmin.filtering import (
+    OPERATOR_ATTR_MAP,
+    NULL_OPERATORS,
+    IS_NULL,
+)
+
 
 # stream_to_csv,
 from sqladmin.pagination import Pagination
@@ -627,6 +633,18 @@ class ModelView(BaseView, metaclass=ModelViewMeta):
         ```
     """
 
+    filter_by: ClassVar[List[MODEL_ATTR]] = []
+    """A list of columns to filter by.
+
+    Columns can either be string names or SQLAlchemy columns.
+
+    ???+ example
+        ```python
+        class UserAdmin(ModelView, model=User):
+            filter_by = [User.name]
+        ```
+    """
+
     def __init__(self) -> None:
         self._mapper = inspect(self.model)
         self._prop_names = [attr.key for attr in self._mapper.attrs]
@@ -756,8 +774,10 @@ class ModelView(BaseView, metaclass=ModelViewMeta):
         page_size = int(request.query_params.get("pageSize", 0))
         page_size = min(page_size or self.page_size, max(self.page_size_options))
         search = request.query_params.get("search", None)
-
+        
         stmt = self.list_query(request)
+        stmt = self.apply_filters(stmt, request)
+        
         for relation in self._list_relations:
             stmt = stmt.options(joinedload(relation))
 
@@ -780,6 +800,26 @@ class ModelView(BaseView, metaclass=ModelViewMeta):
         )
 
         return pagination
+    
+    def apply_filters(self, stmt: Select, request: Request) -> Select:
+
+        for col in self.filter_by:
+            str_col = col if isinstance(col, str) else col.name
+            if str_col in request.query_params:
+                value = request.query_params.get(str_col)
+                query_operator = request.query_params.get(col.name + '__op', "equal")
+                print(value, query_operator)
+                if query_operator in NULL_OPERATORS:
+                    if query_operator == IS_NULL:
+                        stmt = stmt.filter(col.is_(None))
+                    else:
+                        stmt = stmt.filter(col.is_not(None))
+                    continue
+
+                operator = OPERATOR_ATTR_MAP[query_operator]
+                operator_applier = getattr(col, operator)
+                stmt = stmt.filter(operator_applier(value))
+        return stmt
 
     async def get_model_objects(
         self, request: Request, limit: Union[int, None] = 0
